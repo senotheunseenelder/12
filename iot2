@@ -1,0 +1,159 @@
+```
+#include <MD_Parola.h>
+#include <MD_MAX72xx.h>            
+#include <SPI.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <EEPROM.h>
+
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES 4
+#define CLK_PIN   12
+#define DATA_PIN  11
+#define CS_PIN    10
+#define LM35_PIN A0
+
+MD_Parola display = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
+RTC_DS3231 rtc;
+
+char mode[10] = "TEMP";
+char customText[50] = "Hello!";
+char serialBuffer[64];
+char tempBuf[12];
+bool waitingForTextConfirm = false;
+
+// EEPROM locations
+const int MODE_ADDR = 0;
+const int TEXT_ADDR = 10;
+
+void setup() {
+  Serial.begin(9600);
+  display.begin();
+  display.setIntensity(3);
+  display.displayClear();
+
+  if (!rtc.begin()) {
+    Serial.println("RTC not found!");
+  }
+
+  if (rtc.lostPower()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  loadFromEEPROM();
+
+  if (strcmp(mode, "TEXT") == 0) {
+    scrollText(customText);  // show the saved text
+    Serial.print("Saved TEXT: \"");
+    Serial.print(customText);
+    Serial.println("\"");
+    Serial.println("Keep it? (Y/N new_text):");
+    waitingForTextConfirm = true;
+  }
+}
+
+void loop() {
+  readSerialCommand();
+
+  if (waitingForTextConfirm) return; // wait for user decision
+
+  if (strcmp(mode, "TEMP") == 0) {
+    readCTempStr(tempBuf);
+    scrollText(tempBuf);
+  } else if (strcmp(mode, "TIME") == 0) {
+    scrollTime();
+  } else if (strcmp(mode, "TEXT") == 0) {
+    scrollText(customText);
+  }
+
+  delay(1000);
+}
+
+void scrollText(char* text) {
+  display.displayClear();
+  display.displayText(text, PA_LEFT, 50, 0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+  while (!display.displayAnimate()) {}
+}
+
+void scrollTime() {
+  DateTime now = rtc.now();
+  char timeBuf[10];
+  snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", now.hour(), now.minute());
+  scrollText(timeBuf);
+}
+
+void readCTempStr(char* buf) {
+  int total = 0;
+  for (int i = 0; i < 16; i++) total += analogRead(LM35_PIN);
+  float tempC = (total / 16.0) * 500.0 / 1024.0;
+  dtostrf(tempC, 4, 1, buf);
+  strcat(buf, " C");
+}
+
+void readSerialCommand() {
+  static uint8_t idx = 0;
+
+  while (Serial.available()) {
+    char c = Serial.read();
+
+    if (c == '\n' || c == '\r') {
+      serialBuffer[idx] = '\0';
+      idx = 0;
+
+      if (waitingForTextConfirm) {
+        handleTextConfirmation(serialBuffer);
+      } else {
+        handleCommand(serialBuffer);
+      }
+    } else if (idx < sizeof(serialBuffer) - 1) {
+      serialBuffer[idx++] = c;
+    }
+  }
+}
+
+void handleTextConfirmation(char* input) {
+  if (strcmp(input, "Y") == 0 || strcmp(input, "y") == 0) {
+    Serial.println("Keeping existing message.");
+    waitingForTextConfirm = false;
+  } else if (strncmp(input, "N ", 2) == 0 || strncmp(input, "n ", 2) == 0) {
+    strncpy(customText, input + 2, sizeof(customText) - 1);
+    customText[sizeof(customText) - 1] = '\0';
+    Serial.print("New message set: ");
+    Serial.println(customText);
+    saveMode();
+    saveText();
+    waitingForTextConfirm = false;
+  } else {
+Serial.println("Invalid input. Reply with 'Y' or 'N new_text'.");
+  }
+}
+
+void handleCommand(char* input) {
+  if (strcmp(input, "TEMP") == 0) {
+    strcpy(mode, "TEMP");
+    saveMode();
+  } else if (strcmp(input, "TIME") == 0) {
+    strcpy(mode, "TIME");
+    saveMode();
+  } else if (strncmp(input, "TEXT ", 5) == 0) {
+    strcpy(mode, "TEXT");
+    strncpy(customText, input + 5, sizeof(customText) - 1);
+    customText[sizeof(customText) - 1] = '\0';
+    saveMode();
+    saveText();
+  }
+}
+
+void saveMode() {
+  EEPROM.put(MODE_ADDR, mode);
+}
+
+void saveText() {
+  EEPROM.put(TEXT_ADDR, customText);
+}
+
+void loadFromEEPROM() {
+  EEPROM.get(MODE_ADDR, mode);
+  EEPROM.get(TEXT_ADDR, customText);
+}
+```
