@@ -1,6 +1,5 @@
-```
 #include <MD_Parola.h>
-#include <MD_MAX72xx.h>            
+#include <MD_MAX72xx.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <RTClib.h>
@@ -18,19 +17,26 @@ RTC_DS3231 rtc;
 
 char mode[10] = "TEMP";
 char customText[50] = "Hello!";
-char serialBuffer[64];
+uint8_t textEffect = 0;  // animation effect number
+char serialBuffer[128];
 char tempBuf[12];
 bool waitingForTextConfirm = false;
 
-// EEPROM locations
+// EEPROM addresses
 const int MODE_ADDR = 0;
 const int TEXT_ADDR = 10;
+const int EFFECT_ADDR = 60;  // store animation effect number here
 
 void setup() {
   Serial.begin(9600);
   display.begin();
-  display.setIntensity(3);
+  display.setIntensity(5);
   display.displayClear();
+
+  pinMode(9, OUTPUT);
+  digitalWrite(9, HIGH);
+  pinMode(8, OUTPUT);
+  digitalWrite(8, HIGH);
 
   if (!rtc.begin()) {
     Serial.println("RTC not found!");
@@ -43,10 +49,12 @@ void setup() {
   loadFromEEPROM();
 
   if (strcmp(mode, "TEXT") == 0) {
-    scrollText(customText);  // show the saved text
+    scrollText(customText, textEffect);  // show the saved text
     Serial.print("Saved TEXT: \"");
     Serial.print(customText);
     Serial.println("\"");
+    Serial.print("Effect: ");
+    Serial.println(textEffect);
     Serial.println("Keep it? (Y/N new_text):");
     waitingForTextConfirm = true;
   }
@@ -55,23 +63,28 @@ void setup() {
 void loop() {
   readSerialCommand();
 
-  if (waitingForTextConfirm) return; // wait for user decision
+  if (waitingForTextConfirm) return;
 
   if (strcmp(mode, "TEMP") == 0) {
     readCTempStr(tempBuf);
-    scrollText(tempBuf);
+    scrollText(tempBuf, 0);  // default effect 0
+    delay(500);
   } else if (strcmp(mode, "TIME") == 0) {
     scrollTime();
   } else if (strcmp(mode, "TEXT") == 0) {
-    scrollText(customText);
+    scrollText(customText, textEffect);
+    delay(500);
+  } else {
+    scrollText("?ERROR", 0);
   }
 
-  delay(1000);
+  delay(500);
 }
 
-void scrollText(char* text) {
-  display.displayClear();
-  display.displayText(text, PA_LEFT, 50, 0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+// Modified scrollText to accept effect number
+void scrollText(char* text, uint8_t effectNum) {
+  //display.displayClear();
+  display.displayText(text, PA_LEFT, 50, 0, effectNum, effectNum);
   while (!display.displayAnimate()) {}
 }
 
@@ -79,7 +92,10 @@ void scrollTime() {
   DateTime now = rtc.now();
   char timeBuf[10];
   snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", now.hour(), now.minute());
-  scrollText(timeBuf);
+  scrollText(timeBuf, 0);
+  delay(500);
+  snprintf(timeBuf, sizeof(timeBuf), "%02d %02d", now.hour(), now.minute());
+  scrollText(timeBuf, 0);
 }
 
 void readCTempStr(char* buf) {
@@ -111,6 +127,18 @@ void readSerialCommand() {
   }
 }
 
+// Helper: strip surrounding quotes if present
+void stripQuotes(char* str) {
+  int len = strlen(str);
+  if (len >= 2 && str[0] == '"' && str[len - 1] == '"') {
+    // Shift left by one and null terminate before last char
+    for (int i = 0; i < len - 2; i++) {
+      str[i] = str[i + 1];
+    }
+    str[len - 2] = '\0';
+  }
+}
+
 void handleTextConfirmation(char* input) {
   if (strcmp(input, "Y") == 0 || strcmp(input, "y") == 0) {
     Serial.println("Keeping existing message.");
@@ -118,42 +146,123 @@ void handleTextConfirmation(char* input) {
   } else if (strncmp(input, "N ", 2) == 0 || strncmp(input, "n ", 2) == 0) {
     strncpy(customText, input + 2, sizeof(customText) - 1);
     customText[sizeof(customText) - 1] = '\0';
+    stripQuotes(customText);
     Serial.print("New message set: ");
     Serial.println(customText);
     saveMode();
     saveText();
     waitingForTextConfirm = false;
   } else {
-Serial.println("Invalid input. Reply with 'Y' or 'N new_text'.");
+    Serial.println("Invalid input. Reply with 'Y' or 'N new_text'.");
   }
 }
 
 void handleCommand(char* input) {
-  if (strcmp(input, "TEMP") == 0) {
-    strcpy(mode, "TEMP");
-    saveMode();
-  } else if (strcmp(input, "TIME") == 0) {
-    strcpy(mode, "TIME");
-    saveMode();
-  } else if (strncmp(input, "TEXT ", 5) == 0) {
-    strcpy(mode, "TEXT");
-    strncpy(customText, input + 5, sizeof(customText) - 1);
+  // Parse TEXT command with number + quoted string
+  if (strncmp(input, "TEXT ", 5) == 0) {
+    // Format: TEXT <number> "<string>"
+    char* ptr = input + 5;
+
+    // Parse effect number
+    char effectStr[5] = {0};
+    int i = 0;
+    while (*ptr && *ptr != ' ' && i < 4) {
+      effectStr[i++] = *ptr++;
+    }
+    effectStr[i] = '\0';
+    textEffect = atoi(effectStr);
+
+    // Skip spaces
+    while (*ptr == ' ') ptr++;
+
+    // Copy rest as text
+    strncpy(customText, ptr, sizeof(customText) - 1);
     customText[sizeof(customText) - 1] = '\0';
+    stripQuotes(customText);
+
+    strcpy(mode, "TEXT");
     saveMode();
     saveText();
+  } 
+  else if (strcmp(input, "TEMP") == 0) {
+    strcpy(mode, "TEMP");
+    saveMode();
+  } 
+  else if (strcmp(input, "TIME") == 0) {
+    strcpy(mode, "TIME");
+    saveMode();
+  }
+  else if (strcmp(input, "HELP") == 0) {
+    Serial.println("Help message. Type 'HELP' to see this list.");
+    Serial.println(" TEXT [effect] \"string\" ");
+    Serial.println("  'effect' is integer in range of 0 to 5.");
+    Serial.println("   0: Fast blinking, default on.");
+    Serial.println("   1: Fast blinking, default off.");
+    Serial.println("   2: Scroll bottom to top.");
+    Serial.println("   3: Scroll top to bottom.");
+    Serial.println("   4: Scroll right to left.");
+    Serial.println("   5: Scroll left to right.");
+    
+    Serial.println("  Outside will make text not appear.");
+
+    Serial.println("  'string' should be in double quote(\") to register.");
+    Serial.println("  Example: TEXT 3 \"Hello, World!\"");
+    Serial.println(" TEMP\n  Simply display tempreture from tempreture sensor.");
+    Serial.println(" TIME\n  Simply display time from RTC(Real Time Clock).");
+    
+  }
+  else {
+    Serial.println("?Syntax Error");
   }
 }
 
 void saveMode() {
-  EEPROM.put(MODE_ADDR, mode);
+  char oldMode[10];
+  uint8_t oldEffect = EEPROM.read(EFFECT_ADDR);
+  EEPROM.get(MODE_ADDR, oldMode);
+
+  if (strcmp(mode, oldMode) != 0) {
+    EEPROM.put(MODE_ADDR, mode);
+    Serial.print("[Save Mode: '");
+Serial.print(mode);
+  } else {
+    Serial.print("[Keep Mode: '");
+    Serial.print(oldMode);
+  }
+  
+  Serial.print("' | ");
+  
+  if (textEffect != oldEffect) {
+    EEPROM.write(EFFECT_ADDR, textEffect);
+    Serial.print("Save Efx: '");
+    Serial.print(textEffect);
+  } else {
+    Serial.print("Keep Efx '");
+    Serial.print(oldEffect);
+  }
+  
+  Serial.println("']Return!");
 }
 
 void saveText() {
-  EEPROM.put(TEXT_ADDR, customText);
+  char oldCustomText[50];
+  EEPROM.get(TEXT_ADDR, oldCustomText);
+  if(strcmp(customText, oldCustomText) != 0) {
+    EEPROM.put(TEXT_ADDR, customText);
+    Serial.print("[Save Custom Text]\n  '");
+    Serial.print(customText);
+  } else {
+    Serial.print("[Keep Custom Text]\n  '");
+    Serial.print(oldCustomText);
+  }
+  Serial.println("'\nReturn!");
+  
+  
 }
 
 void loadFromEEPROM() {
   EEPROM.get(MODE_ADDR, mode);
   EEPROM.get(TEXT_ADDR, customText);
+  textEffect = EEPROM.read(EFFECT_ADDR);
 }
-```
+
